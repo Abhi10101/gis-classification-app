@@ -12,6 +12,13 @@
 # - Gmail delivery
 # - guaranteed cleanup
 # ============================================================
+import streamlit as st
+
+st.set_page_config(
+    page_title="GIS Classification",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 import streamlit as st
 from pathlib import Path
@@ -368,3 +375,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
