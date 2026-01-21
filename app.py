@@ -1,22 +1,19 @@
 # ============================================================
-# app.py
-# ============================================================
-# Production-safe Streamlit app
+# app.py — FINAL STABLE VERSION
 # ============================================================
 
 import streamlit as st
 
 # ------------------------------------------------------------
-# PAGE CONFIG (MUST BE FIRST STREAMLIT CALL)
+# PAGE CONFIG — MUST BE FIRST STREAMLIT CALL
 # ------------------------------------------------------------
 st.set_page_config(
     page_title="GIS Image Classification | Abhinandan Sood",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout="wide"
 )
 
 # ------------------------------------------------------------
-# IMPORTS
+# STANDARD LIBS
 # ------------------------------------------------------------
 from pathlib import Path
 import json
@@ -26,6 +23,9 @@ import gc
 import yaml
 import atexit
 
+# ------------------------------------------------------------
+# INTERNAL MODULES (SAFE AFTER PAGE CONFIG)
+# ------------------------------------------------------------
 import ui_1_main
 import ui_2_docs
 
@@ -57,9 +57,8 @@ except Exception:
     def init_logger(_):
         pass
 
-
 # ------------------------------------------------------------
-# LIMITS
+# HARD LIMITS (SAFETY)
 # ------------------------------------------------------------
 MAX_RASTER_MB = 1500
 MAX_CLASS_ZIPS = 10
@@ -77,14 +76,18 @@ def load_config() -> dict:
         return yaml.safe_load(f) or {}
 
 
+def validate_email_config(cfg: dict):
+    for k in ("sender", "smtp_server", "smtp_port", "app_password"):
+        if not cfg.get(k):
+            raise ValueError(f"Missing email config key: {k}")
+
+
 # ------------------------------------------------------------
-# MAIN
+# MAIN APP
 # ------------------------------------------------------------
 def main():
 
-    # --------------------------------------------------------
-    # SESSION STATE INIT
-    # --------------------------------------------------------
+    # ---------------- SESSION STATE INIT (SAFE) ----------------
     defaults = {
         "session": None,
         "tracker": None,
@@ -96,9 +99,7 @@ def main():
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # --------------------------------------------------------
-    # FAILSAFE CLEANUP ON EXIT
-    # --------------------------------------------------------
+    # ---------------- FAILSAFE CLEANUP ----------------
     def _final_cleanup():
         sess = st.session_state.get("session")
         if sess and not st.session_state.get("cleanup_done"):
@@ -109,36 +110,31 @@ def main():
 
     atexit.register(_final_cleanup)
 
-    # --------------------------------------------------------
-    # LOAD CONFIG
-    # --------------------------------------------------------
+    # ---------------- LOAD CONFIG ----------------
     config = load_config()
     inference_cfg = config.get("inference", {})
     ensemble_cfg = config.get("ensemble", {})
     ndvi_cfg = config.get("ndvi_rules", {})
+    email_cfg = config.get("email", {})
 
     tile_size = int(inference_cfg.get("tile_size", 512))
-    ensemble_weights = ensemble_cfg.get("weights", None)
-    ndvi_conf_threshold = ndvi_cfg.get("confidence_threshold", None)
+    ensemble_weights = ensemble_cfg.get("weights")
+    ndvi_conf_threshold = ndvi_cfg.get("confidence_threshold")
 
-    # --------------------------------------------------------
-    # UI
-    # --------------------------------------------------------
+    # ---------------- UI ----------------
     tab_home, tab_docs = st.tabs(["🏠 Home", "📘 Documentation"])
 
-    # ========================================================
-    # HOME
-    # ========================================================
+    # =========================================================
+    # HOME TAB
+    # =========================================================
     with tab_home:
 
         inputs = ui_1_main.render()
 
-        # ----------------------------------------------------
-        # TRAINING
-        # ----------------------------------------------------
         st.divider()
         st.subheader("🧠 Model Training")
 
+        # ---------------- TRAIN ----------------
         if st.button("🚀 Train Models"):
 
             stack_file = inputs.get("stack_file")
@@ -146,7 +142,7 @@ def main():
             classes = inputs.get("classes", [])
 
             if not stack_file or not ndvi_file:
-                st.error("Stack and NDVI rasters are required")
+                st.error("Stack & NDVI rasters are required")
                 st.stop()
 
             if stack_file.size / 1e6 > MAX_RASTER_MB:
@@ -160,11 +156,6 @@ def main():
             if len(classes) > MAX_CLASS_ZIPS:
                 st.error("Too many class shapefiles")
                 st.stop()
-
-            for cls in classes:
-                if cls.get("zip") and cls["zip"].size / 1e6 > MAX_ZIP_MB:
-                    st.error("One or more class ZIPs too large")
-                    st.stop()
 
             if validate_inputs:
                 ok, msg = validate_inputs(inputs)
@@ -212,7 +203,7 @@ def main():
                         color_map[cid] = [int(hex_c[i:i+2], 16) for i in (0, 2, 4)]
                         cid += 1
 
-                    with open(session.path("class_color_map.json"), "w", encoding="utf-8") as f:
+                    with open(session.path("class_color_map.json"), "w") as f:
                         json.dump(color_map, f, indent=2)
 
                     build_dataset(str(stack_path), str(ndvi_path), shapefile_info, str(out_dir))
@@ -225,23 +216,29 @@ def main():
                     )
                     progress.progress(50)
 
-                    train_random_forest(str(session.path("X_clean.npy")),
-                                         str(session.path("y_clean.npy")),
-                                         str(out_dir))
+                    train_random_forest(
+                        str(session.path("X_clean.npy")),
+                        str(session.path("y_clean.npy")),
+                        str(out_dir)
+                    )
                     progress.progress(70)
 
-                    train_xgboost(str(session.path("X_clean.npy")),
-                                  str(session.path("y_clean.npy")),
-                                  str(out_dir))
+                    train_xgboost(
+                        str(session.path("X_clean.npy")),
+                        str(session.path("y_clean.npy")),
+                        str(out_dir)
+                    )
                     progress.progress(85)
 
-                    train_logistic_regression(str(session.path("X_clean.npy")),
-                                              str(session.path("y_clean.npy")),
-                                              str(out_dir))
+                    train_logistic_regression(
+                        str(session.path("X_clean.npy")),
+                        str(session.path("y_clean.npy")),
+                        str(out_dir)
+                    )
                     progress.progress(100)
 
                 st.session_state["models_trained"] = True
-                st.success("Training completed successfully")
+                st.success("Training completed")
 
             except Exception as e:
                 log_event(f"Training failed: {e}", "ERROR")
@@ -252,16 +249,13 @@ def main():
             finally:
                 gc.collect()
 
-        # ----------------------------------------------------
-        # INFERENCE
-        # ----------------------------------------------------
+        # ---------------- INFERENCE ----------------
         st.divider()
         st.subheader("🛰️ Inference")
 
         if st.button("▶️ Run Inference", disabled=not st.session_state["models_trained"]):
 
             session = st.session_state["session"]
-            tracker = st.session_state["tracker"]
 
             try:
                 with st.status("Running inference...", expanded=True):
@@ -294,26 +288,18 @@ def main():
                 st.session_state["inference_done"] = True
                 st.success("Inference completed")
 
-            except Exception as e:
-                log_event(f"Inference failed: {e}", "ERROR")
-                session.cleanup(force=True)
-                st.error("Inference failed")
-                st.stop()
-
             finally:
                 set_progress_callback(None)
                 gc.collect()
 
-        # ----------------------------------------------------
-        # DOWNLOAD + EMAIL + CLEANUP
-        # ----------------------------------------------------
+        # ---------------- DOWNLOAD & CLEANUP ----------------
         if st.session_state["inference_done"]:
 
             session = st.session_state["session"]
             tracker = st.session_state["tracker"]
 
             zip_buf = io.BytesIO()
-            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(zip_buf, "w") as zf:
                 for f in (
                     "final_class.tif",
                     "final_class_color.tif",
@@ -324,24 +310,29 @@ def main():
 
             zip_buf.seek(0)
 
-            if st.download_button(
-                "📦 Download Results",
-                zip_buf.getvalue(),
-                file_name="gis_outputs.zip"
-            ):
+            if st.download_button("📦 Download Results", zip_buf.getvalue(),
+                                  file_name="gis_outputs.zip"):
+
                 try:
+                    validate_email_config(email_cfg)
                     csv_path = tracker.export_csv(session.path("run_report.csv"))
-                    send_csv_email(csv_path)
-                except Exception as e:
-                    log_event(f"Email failed: {e}", "ERROR")
+
+                    send_csv_email(
+                        csv_path=csv_path,
+                        sender_email=email_cfg["sender"],
+                        receiver_email=email_cfg.get("receiver", email_cfg["sender"]),
+                        smtp_server=email_cfg["smtp_server"],
+                        smtp_port=email_cfg["smtp_port"],
+                        app_password=email_cfg["app_password"]
+                    )
                 finally:
                     session.cleanup(force=True)
                     st.session_state["cleanup_done"] = True
-                    st.success("Results delivered and cleaned up")
+                    st.success("Delivered & cleaned")
 
-    # ========================================================
-    # DOCS
-    # ========================================================
+    # =========================================================
+    # DOCS TAB
+    # =========================================================
     with tab_docs:
         ui_2_docs.render()
 
