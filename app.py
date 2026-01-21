@@ -2,25 +2,22 @@
 # app.py
 # ============================================================
 # Production-safe Streamlit app
-# Fully wired with:
-# - session isolation
-# - training
-# - inference
-# - NDVI rules
-# - colorization
-# - CSV MLOps report
-# - Gmail delivery
-# - guaranteed cleanup
 # ============================================================
+
 import streamlit as st
 
+# ------------------------------------------------------------
+# PAGE CONFIG (MUST BE FIRST STREAMLIT CALL)
+# ------------------------------------------------------------
 st.set_page_config(
-    page_title="GIS Classification",
+    page_title="GIS Image Classification | Abhinandan Sood",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-import streamlit as st
+# ------------------------------------------------------------
+# IMPORTS
+# ------------------------------------------------------------
 from pathlib import Path
 import json
 import zipfile
@@ -47,7 +44,7 @@ from run_tracker import RunTracker
 from mailer import send_csv_email
 
 try:
-    from app_validators import validate_inputs
+    from validators import validate_inputs
 except Exception:
     validate_inputs = None
 
@@ -56,12 +53,13 @@ try:
 except Exception:
     def log_event(msg, level="INFO"):
         print(f"[{level}] {msg}")
+
     def init_logger(_):
         pass
 
 
 # ------------------------------------------------------------
-# LIMITS (HARD SAFETY)
+# LIMITS
 # ------------------------------------------------------------
 MAX_RASTER_MB = 1500
 MAX_CLASS_ZIPS = 10
@@ -79,37 +77,13 @@ def load_config() -> dict:
         return yaml.safe_load(f) or {}
 
 
-def validate_email_config(cfg: dict):
-    for k in ("sender", "smtp_server", "smtp_port", "app_password"):
-        if not cfg.get(k):
-            raise ValueError(f"Missing email config key: {k}")
-
-
 # ------------------------------------------------------------
 # MAIN
 # ------------------------------------------------------------
 def main():
 
-    st.set_page_config(
-        page_title="GIS Image Classification | Abhinandan Sood",
-        layout="wide"
-    )
-
     # --------------------------------------------------------
-    # LOAD CONFIG
-    # --------------------------------------------------------
-    config = load_config()
-    inference_cfg = config.get("inference", {})
-    ensemble_cfg = config.get("ensemble", {})
-    ndvi_cfg = config.get("ndvi_rules", {})
-    email_cfg = config.get("email", {})
-
-    tile_size = int(inference_cfg.get("tile_size", 512))
-    ensemble_weights = ensemble_cfg.get("weights", None)
-    ndvi_conf_threshold = ndvi_cfg.get("confidence_threshold", None)
-
-    # --------------------------------------------------------
-    # SESSION STATE INIT (NO KEYERROR POSSIBLE)
+    # SESSION STATE INIT
     # --------------------------------------------------------
     defaults = {
         "session": None,
@@ -123,7 +97,7 @@ def main():
             st.session_state[k] = v
 
     # --------------------------------------------------------
-    # FAILSAFE CLEANUP (PROCESS EXIT)
+    # FAILSAFE CLEANUP ON EXIT
     # --------------------------------------------------------
     def _final_cleanup():
         sess = st.session_state.get("session")
@@ -136,7 +110,19 @@ def main():
     atexit.register(_final_cleanup)
 
     # --------------------------------------------------------
-    # UI TABS
+    # LOAD CONFIG
+    # --------------------------------------------------------
+    config = load_config()
+    inference_cfg = config.get("inference", {})
+    ensemble_cfg = config.get("ensemble", {})
+    ndvi_cfg = config.get("ndvi_rules", {})
+
+    tile_size = int(inference_cfg.get("tile_size", 512))
+    ensemble_weights = ensemble_cfg.get("weights", None)
+    ndvi_conf_threshold = ndvi_cfg.get("confidence_threshold", None)
+
+    # --------------------------------------------------------
+    # UI
     # --------------------------------------------------------
     tab_home, tab_docs = st.tabs(["🏠 Home", "📘 Documentation"])
 
@@ -159,7 +145,6 @@ def main():
             ndvi_file = inputs.get("ndvi_file")
             classes = inputs.get("classes", [])
 
-            # ---------------- VALIDATION ----------------
             if not stack_file or not ndvi_file:
                 st.error("Stack and NDVI rasters are required")
                 st.stop()
@@ -187,7 +172,6 @@ def main():
                     st.error(msg)
                     st.stop()
 
-            # ---------------- SESSION ----------------
             session = SessionManager()
             out_dir = session.create()
             init_logger(out_dir)
@@ -207,13 +191,11 @@ def main():
                 with st.status("Training models...", expanded=True):
                     progress = st.progress(0)
 
-                    # Save rasters
                     stack_path = session.path("stack.tif")
                     ndvi_path = session.path("ndvi.tif")
                     stack_path.write_bytes(stack_file.read())
                     ndvi_path.write_bytes(ndvi_file.read())
 
-                    # Prepare class info
                     shapefile_info = []
                     color_map = {0: [165, 42, 42]}
                     cid = 1
@@ -342,25 +324,16 @@ def main():
 
             zip_buf.seek(0)
 
-            if st.download_button("📦 Download Results", zip_buf.getvalue(),
-                                  file_name="gis_outputs.zip"):
-
+            if st.download_button(
+                "📦 Download Results",
+                zip_buf.getvalue(),
+                file_name="gis_outputs.zip"
+            ):
                 try:
-                    validate_email_config(email_cfg)
                     csv_path = tracker.export_csv(session.path("run_report.csv"))
-
-                    send_csv_email(
-                        csv_path=csv_path,
-                        sender_email=email_cfg["sender"],
-                        receiver_email="soodji57@gmail.com",
-                        smtp_server=email_cfg["smtp_server"],
-                        smtp_port=email_cfg["smtp_port"],
-                        app_password=email_cfg["app_password"]
-                    )
-
+                    send_csv_email(csv_path)
                 except Exception as e:
                     log_event(f"Email failed: {e}", "ERROR")
-
                 finally:
                     session.cleanup(force=True)
                     st.session_state["cleanup_done"] = True
@@ -375,4 +348,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
