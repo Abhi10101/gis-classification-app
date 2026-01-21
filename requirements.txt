@@ -1,0 +1,29 @@
+# ============================================================
+# GIS Classification App - Locked Requirements
+# Python: 3.8 / 3.9 (Windows / Linux, 64-bit)
+# ============================================================
+
+# ---------------- UI ----------------
+streamlit==1.29.0
+
+# ---------------- Core scientific ----------------
+numpy==1.24.4
+scipy==1.10.1
+pandas==2.0.3
+
+# ---------------- ML ----------------
+scikit-learn==1.3.2
+joblib==1.3.2
+xgboost==1.7.6
+
+# ---------------- GIS stack (order matters) ----------------
+pyproj==3.6.1
+shapely==2.0.2
+fiona==1.9.5
+rasterio==1.3.9
+geopandas==0.14.1
+
+# ---------------- Utilities ----------------
+tqdm==4.66.1
+pyyaml==6.0.1
+psutil==5.9.6

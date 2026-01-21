@@ -1,0 +1,54 @@
+# ============================================================
+# config.yaml
+# ============================================================
+# GIS Classification App Configuration
+# Python 3.8 / 3.9 compatible
+# ============================================================
+
+# ------------------------------------------------------------
+# Inference configuration
+# ------------------------------------------------------------
+inference:
+  # Tile size for raster inference
+  # Recommended: 256 or 512
+  tile_size: 512
+
+
+# ------------------------------------------------------------
+# Ensemble configuration
+# ------------------------------------------------------------
+ensemble:
+  # Model weights for probability ensemble
+  # Must be >= 0, at least one > 0
+  weights:
+    rf: 1.0
+    xgb: 1.0
+    lr: 1.0
+
+
+# ------------------------------------------------------------
+# NDVI rule configuration
+# ------------------------------------------------------------
+ndvi_rules:
+  # Confidence threshold below which NDVI override applies
+  # Set to null to disable NDVI override
+  confidence_threshold: 0.6
+
+
+# ------------------------------------------------------------
+# Email (MLOps report delivery)
+# ------------------------------------------------------------
+email:
+  # Sender Gmail address
+  # Must match the Gmail account used for App Password
+  sender: "soodji57@gmail.com"
+
+  # SMTP server for Gmail
+  smtp_server: "smtp.gmail.com"
+
+  # SMTP TLS port
+  smtp_port: 587
+
+  # Gmail App Password (NOT your Gmail login password)
+  # Generate from Google Account → Security → App passwords
+  app_password: "PASTE_YOUR_GMAIL_APP_PASSWORD_HERE"
