@@ -1,11 +1,11 @@
 # ============================================================
-# app.py — FINAL STABLE VERSION
+# app.py — FINAL DEPLOY-SAFE VERSION (STREAMLIT CLOUD)
 # ============================================================
 
 import streamlit as st
 
 # ------------------------------------------------------------
-# PAGE CONFIG — MUST BE FIRST STREAMLIT CALL
+# PAGE CONFIG — ABSOLUTELY FIRST STREAMLIT CALL
 # ------------------------------------------------------------
 st.set_page_config(
     page_title="GIS Image Classification | Abhinandan Sood",
@@ -24,11 +24,8 @@ import yaml
 import atexit
 
 # ------------------------------------------------------------
-# INTERNAL MODULES (SAFE AFTER PAGE CONFIG)
+# INTERNAL NON-UI MODULES (SAFE)
 # ------------------------------------------------------------
-import ui_1_main
-import ui_2_docs
-
 from dataset_builder import build_dataset
 from feature_engineering import prepare_features
 from train_rf import train_random_forest
@@ -57,37 +54,40 @@ except Exception:
     def init_logger(_):
         pass
 
+
 # ------------------------------------------------------------
-# HARD LIMITS (SAFETY)
+# LIMITS
 # ------------------------------------------------------------
 MAX_RASTER_MB = 1500
 MAX_CLASS_ZIPS = 10
-MAX_ZIP_MB = 50
 
 
 # ------------------------------------------------------------
 # CONFIG
 # ------------------------------------------------------------
-def load_config() -> dict:
+def load_config():
     cfg = Path("config.yaml")
     if not cfg.exists():
         return {}
-    with open(cfg, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    return yaml.safe_load(cfg.read_text()) or {}
 
 
-def validate_email_config(cfg: dict):
+def validate_email_config(cfg):
     for k in ("sender", "smtp_server", "smtp_port", "app_password"):
         if not cfg.get(k):
             raise ValueError(f"Missing email config key: {k}")
 
 
 # ------------------------------------------------------------
-# MAIN APP
+# MAIN
 # ------------------------------------------------------------
 def main():
 
-    # ---------------- SESSION STATE INIT (SAFE) ----------------
+    # 🔥 IMPORT UI MODULES HERE (CRITICAL)
+    import ui_1_main
+    import ui_2_docs
+
+    # ---------------- SESSION STATE ----------------
     defaults = {
         "session": None,
         "tracker": None,
@@ -96,8 +96,7 @@ def main():
         "cleanup_done": False,
     }
     for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
+        st.session_state.setdefault(k, v)
 
     # ---------------- FAILSAFE CLEANUP ----------------
     def _final_cleanup():
@@ -110,7 +109,7 @@ def main():
 
     atexit.register(_final_cleanup)
 
-    # ---------------- LOAD CONFIG ----------------
+    # ---------------- CONFIG ----------------
     config = load_config()
     inference_cfg = config.get("inference", {})
     ensemble_cfg = config.get("ensemble", {})
@@ -125,7 +124,7 @@ def main():
     tab_home, tab_docs = st.tabs(["🏠 Home", "📘 Documentation"])
 
     # =========================================================
-    # HOME TAB
+    # HOME
     # =========================================================
     with tab_home:
 
@@ -134,7 +133,6 @@ def main():
         st.divider()
         st.subheader("🧠 Model Training")
 
-        # ---------------- TRAIN ----------------
         if st.button("🚀 Train Models"):
 
             stack_file = inputs.get("stack_file")
@@ -142,32 +140,14 @@ def main():
             classes = inputs.get("classes", [])
 
             if not stack_file or not ndvi_file:
-                st.error("Stack & NDVI rasters are required")
+                st.error("Stack & NDVI rasters required")
                 st.stop()
-
-            if stack_file.size / 1e6 > MAX_RASTER_MB:
-                st.error("Stack raster too large")
-                st.stop()
-
-            if ndvi_file.size / 1e6 > MAX_RASTER_MB:
-                st.error("NDVI raster too large")
-                st.stop()
-
-            if len(classes) > MAX_CLASS_ZIPS:
-                st.error("Too many class shapefiles")
-                st.stop()
-
-            if validate_inputs:
-                ok, msg = validate_inputs(inputs)
-                if not ok:
-                    st.error(msg)
-                    st.stop()
 
             session = SessionManager()
             out_dir = session.create()
             init_logger(out_dir)
 
-            tracker = RunTracker(session_id=out_dir.name)
+            tracker = RunTracker(out_dir.name)
             tracker.start()
 
             st.session_state.update({
@@ -203,8 +183,8 @@ def main():
                         color_map[cid] = [int(hex_c[i:i+2], 16) for i in (0, 2, 4)]
                         cid += 1
 
-                    with open(session.path("class_color_map.json"), "w") as f:
-                        json.dump(color_map, f, indent=2)
+                    (session.path("class_color_map.json")
+                     .write_text(json.dumps(color_map, indent=2)))
 
                     build_dataset(str(stack_path), str(ndvi_path), shapefile_info, str(out_dir))
                     progress.progress(30)
@@ -214,37 +194,19 @@ def main():
                         str(session.path("y.npy")),
                         str(out_dir)
                     )
-                    progress.progress(50)
+                    progress.progress(60)
 
-                    train_random_forest(
-                        str(session.path("X_clean.npy")),
-                        str(session.path("y_clean.npy")),
-                        str(out_dir)
-                    )
-                    progress.progress(70)
+                    train_random_forest(str(session.path("X_clean.npy")),
+                                        str(session.path("y_clean.npy")), str(out_dir))
+                    train_xgboost(str(session.path("X_clean.npy")),
+                                  str(session.path("y_clean.npy")), str(out_dir))
+                    train_logistic_regression(str(session.path("X_clean.npy")),
+                                              str(session.path("y_clean.npy")), str(out_dir))
 
-                    train_xgboost(
-                        str(session.path("X_clean.npy")),
-                        str(session.path("y_clean.npy")),
-                        str(out_dir)
-                    )
-                    progress.progress(85)
-
-                    train_logistic_regression(
-                        str(session.path("X_clean.npy")),
-                        str(session.path("y_clean.npy")),
-                        str(out_dir)
-                    )
                     progress.progress(100)
 
                 st.session_state["models_trained"] = True
                 st.success("Training completed")
-
-            except Exception as e:
-                log_event(f"Training failed: {e}", "ERROR")
-                session.cleanup(force=True)
-                st.error("Training failed")
-                st.stop()
 
             finally:
                 gc.collect()
@@ -257,55 +219,44 @@ def main():
 
             session = st.session_state["session"]
 
-            try:
-                with st.status("Running inference...", expanded=True):
-                    progress = st.progress(0)
-                    set_progress_callback(lambda p, m: progress.progress(p, m))
+            with st.status("Running inference...", expanded=True):
+                progress = st.progress(0)
+                set_progress_callback(lambda p, m: progress.progress(p, m))
 
-                    run_inference(
-                        stack_path=str(session.path("stack.tif")),
-                        ndvi_path=str(session.path("ndvi.tif")),
-                        model_dir=str(session.path()),
-                        out_dir=str(session.path()),
-                        tile_size=tile_size,
-                        ensemble_weights=ensemble_weights
-                    )
+                run_inference(
+                    str(session.path("stack.tif")),
+                    str(session.path("ndvi.tif")),
+                    str(session.path()),
+                    str(session.path()),
+                    tile_size,
+                    ensemble_weights
+                )
 
-                    apply_ndvi_rules(
-                        str(session.path("predicted_class.tif")),
-                        str(session.path("prediction_confidence.tif")),
-                        str(session.path("ndvi.tif")),
-                        str(session.path("final_class.tif")),
-                        ndvi_conf_threshold
-                    )
+                apply_ndvi_rules(
+                    str(session.path("predicted_class.tif")),
+                    str(session.path("prediction_confidence.tif")),
+                    str(session.path("ndvi.tif")),
+                    str(session.path("final_class.tif")),
+                    ndvi_conf_threshold
+                )
 
-                    colorize_class_map(
-                        str(session.path("final_class.tif")),
-                        str(session.path("class_color_map.json")),
-                        str(session.path("final_class_color.tif"))
-                    )
+                colorize_class_map(
+                    str(session.path("final_class.tif")),
+                    str(session.path("class_color_map.json")),
+                    str(session.path("final_class_color.tif"))
+                )
 
-                st.session_state["inference_done"] = True
-                st.success("Inference completed")
+            st.session_state["inference_done"] = True
+            set_progress_callback(None)
 
-            finally:
-                set_progress_callback(None)
-                gc.collect()
-
-        # ---------------- DOWNLOAD & CLEANUP ----------------
+        # ---------------- DOWNLOAD ----------------
         if st.session_state["inference_done"]:
-
             session = st.session_state["session"]
-            tracker = st.session_state["tracker"]
 
             zip_buf = io.BytesIO()
             with zipfile.ZipFile(zip_buf, "w") as zf:
-                for f in (
-                    "final_class.tif",
-                    "final_class_color.tif",
-                    "prediction_confidence.tif",
-                    "class_color_map.json",
-                ):
+                for f in ("final_class.tif", "final_class_color.tif",
+                          "prediction_confidence.tif", "class_color_map.json"):
                     zf.write(session.path(f), arcname=f)
 
             zip_buf.seek(0)
@@ -313,25 +264,18 @@ def main():
             if st.download_button("📦 Download Results", zip_buf.getvalue(),
                                   file_name="gis_outputs.zip"):
 
-                try:
-                    validate_email_config(email_cfg)
-                    csv_path = tracker.export_csv(session.path("run_report.csv"))
+                validate_email_config(email_cfg)
+                csv_path = st.session_state["tracker"].export_csv(
+                    session.path("run_report.csv")
+                )
 
-                    send_csv_email(
-                        csv_path=csv_path,
-                        sender_email=email_cfg["sender"],
-                        receiver_email=email_cfg.get("receiver", email_cfg["sender"]),
-                        smtp_server=email_cfg["smtp_server"],
-                        smtp_port=email_cfg["smtp_port"],
-                        app_password=email_cfg["app_password"]
-                    )
-                finally:
-                    session.cleanup(force=True)
-                    st.session_state["cleanup_done"] = True
-                    st.success("Delivered & cleaned")
+                send_csv_email(csv_path, **email_cfg)
+                session.cleanup(force=True)
+                st.session_state["cleanup_done"] = True
+                st.success("Delivered & cleaned")
 
     # =========================================================
-    # DOCS TAB
+    # DOCS
     # =========================================================
     with tab_docs:
         ui_2_docs.render()
