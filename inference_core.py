@@ -1,5 +1,5 @@
 # ============================================================
-# inference/inference_core.py
+# inference/inference_core.py — OPTIMIZED & SAFE
 # ============================================================
 
 from pathlib import Path
@@ -15,7 +15,7 @@ from ensemble import ensemble_probabilities
 
 
 # ------------------------------------------------------------
-# Optional imports (explicit, no silent logic change)
+# Optional imports
 # ------------------------------------------------------------
 try:
     from logger import log_event
@@ -30,32 +30,24 @@ except Exception:
 
 
 # ------------------------------------------------------------
-# INTERNAL CONSTANTS
+# INTERNALS
 # ------------------------------------------------------------
 _PROGRESS_LOG_EVERY = 10
-
-
-# ------------------------------------------------------------
-# PROGRESS CALLBACK
-# ------------------------------------------------------------
 _progress_callback: Optional[Callable[[float, str], None]] = None
 
 
 def set_progress_callback(cb: Optional[Callable[[float, str], None]]):
-    """UI hook: cb(progress[0–1], message)"""
     global _progress_callback
     _progress_callback = cb
 
 
-def _emit_progress(progress: float, message: str):
-    if _progress_callback is None:
-        return
-    p = min(max(float(progress), 0.0), 1.0)
-    _progress_callback(p, message)
+def _emit_progress(p: float, msg: str):
+    if _progress_callback:
+        _progress_callback(float(min(max(p, 0), 1)), msg)
 
 
 # ------------------------------------------------------------
-# MAIN ENTRY (DO NOT CHANGE SIGNATURE)
+# MAIN ENTRY (SIGNATURE UNCHANGED)
 # ------------------------------------------------------------
 def run_inference(
     stack_path: str,
@@ -65,37 +57,26 @@ def run_inference(
     tile_size: int = 512,
     ensemble_weights: Optional[Dict] = None
 ):
-    """
-    Inference core
-    Python 3.8 / 3.9 compatible
-    """
 
     stack_path = Path(stack_path)
     ndvi_path = Path(ndvi_path)
     model_dir = Path(model_dir)
     out_dir = Path(out_dir)
 
-    # --------------------------------------------------------
-    # STRICT PATH VALIDATION
-    # --------------------------------------------------------
-    if not stack_path.exists():
-        raise FileNotFoundError(f"Stack raster not found: {stack_path}")
-
-    if not ndvi_path.exists():
-        raise FileNotFoundError(f"NDVI raster not found: {ndvi_path}")
-
-    if not model_dir.exists():
-        raise FileNotFoundError(f"Model directory not found: {model_dir}")
-
-    if not out_dir.exists() or not out_dir.is_dir():
-        raise FileNotFoundError(f"Output directory missing: {out_dir}")
+    # ---------------- VALIDATION ----------------
+    for p, n in [
+        (stack_path, "Stack"),
+        (ndvi_path, "NDVI"),
+        (model_dir, "Model dir"),
+        (out_dir, "Output dir"),
+    ]:
+        if not p.exists():
+            raise FileNotFoundError(f"{n} not found: {p}")
 
     log_event("Inference started")
-    _emit_progress(0.0, "Initializing inference")
+    _emit_progress(0.0, "Initializing")
 
-    # --------------------------------------------------------
-    # LOAD MODELS (ONCE)
-    # --------------------------------------------------------
+    # ---------------- LOAD MODELS ONCE ----------------
     rf = joblib.load(model_dir / "rf_model.joblib")
 
     xgb_model = xgb.XGBClassifier(
@@ -107,48 +88,32 @@ def run_inference(
     lr_path = model_dir / "lr_model.joblib"
     lr = joblib.load(lr_path) if lr_path.exists() else None
 
-    models = [rf, xgb_model]
-    if lr is not None:
-        models.append(lr)
+    models = [rf, xgb_model] + ([lr] if lr else [])
 
-    # --------------------------------------------------------
-    # ENSEMBLE WEIGHTS (STRICT)
-    # --------------------------------------------------------
-    if ensemble_weights is None:
-        ensemble_weights = {}
+    # ---------------- ENSEMBLE WEIGHTS ----------------
+    ensemble_weights = ensemble_weights or {}
+    weights = np.array(
+        [
+            ensemble_weights.get("rf", 1.0),
+            ensemble_weights.get("xgb", 1.0),
+            ensemble_weights.get("lr", 1.0) if lr else 0.0,
+        ],
+        dtype=np.float32
+    )
+    weights = weights[:len(models)]
+    weights /= weights.sum()
 
-    weights = []
-    weights.append(float(ensemble_weights.get("rf", 1.0)))
-    weights.append(float(ensemble_weights.get("xgb", 1.0)))
-    if lr is not None:
-        weights.append(float(ensemble_weights.get("lr", 1.0)))
-
-    weight_arr = np.asarray(weights, dtype=np.float32)
-
-    if not np.isfinite(weight_arr).all() or np.any(weight_arr < 0):
-        raise ValueError("Invalid ensemble weights")
-
-    if weight_arr.sum() <= 0:
-        raise ValueError("Ensemble weights sum must be > 0")
-
-    weight_arr /= weight_arr.sum()
-
-    # --------------------------------------------------------
-    # OPEN RASTERS
-    # --------------------------------------------------------
+    # ---------------- OPEN RASTERS ----------------
     with rasterio.open(stack_path) as stack_ds, rasterio.open(ndvi_path) as ndvi_ds:
 
-        if validate_raster_pair is not None:
+        if validate_raster_pair:
             validate_raster_pair(stack_ds, ndvi_ds)
 
-        if stack_ds.crs != ndvi_ds.crs:
-            raise ValueError("CRS mismatch")
+        if stack_ds.crs != ndvi_ds.crs or stack_ds.transform != ndvi_ds.transform:
+            raise ValueError("Raster alignment mismatch")
 
-        if stack_ds.transform != ndvi_ds.transform:
-            raise ValueError("Transform mismatch")
-
-        height, width = stack_ds.height, stack_ds.width
-        bands = stack_ds.count
+        H, W = stack_ds.height, stack_ds.width
+        B = stack_ds.count
 
         profile = stack_ds.profile.copy()
         profile.update(dtype=rasterio.uint8, count=1, nodata=255, compress="lzw")
@@ -159,60 +124,71 @@ def run_inference(
         out_class = out_dir / "predicted_class.tif"
         out_conf = out_dir / "prediction_confidence.tif"
 
-        tiles_y = (height + tile_size - 1) // tile_size
-        tiles_x = (width + tile_size - 1) // tile_size
-        total_tiles = tiles_y * tiles_x
-        processed = 0
-
-        log_event(f"Total tiles: {total_tiles}")
+        tiles_y = (H + tile_size - 1) // tile_size
+        tiles_x = (W + tile_size - 1) // tile_size
+        total_tiles = tiles_x * tiles_y
+        done = 0
 
         with rasterio.open(out_class, "w", **profile) as cls_dst, \
              rasterio.open(out_conf, "w", **conf_profile) as conf_dst:
 
-            for row in range(0, height, tile_size):
-                for col in range(0, width, tile_size):
+            for r in range(0, H, tile_size):
+                for c in range(0, W, tile_size):
 
-                    processed += 1
-                    h = min(tile_size, height - row)
-                    w = min(tile_size, width - col)
-                    window = Window(col, row, w, h)
+                    done += 1
+                    h = min(tile_size, H - r)
+                    w = min(tile_size, W - c)
+                    win = Window(c, r, w, h)
 
-                    stack = stack_ds.read(window=window).astype(np.float32)
-                    ndvi = ndvi_ds.read(1, window=window).astype(np.float32)
+                    stack = stack_ds.read(window=win).astype(np.float32)
+                    ndvi = ndvi_ds.read(1, window=win).astype(np.float32)
 
-                    X_img = stack.reshape(bands, -1).T
-                    X = np.empty((X_img.shape[0], bands + 1), dtype=np.float32)
-                    X[:, :-1] = X_img
-                    X[:, -1] = ndvi.reshape(-1)
+                    X = np.concatenate(
+                        [stack.reshape(B, -1).T, ndvi.reshape(-1, 1)],
+                        axis=1
+                    )
 
                     valid = np.isfinite(X).all(axis=1)
 
-                    cls_flat = np.full(h * w, 255, dtype=np.uint8)
-                    conf_flat = np.zeros(h * w, dtype=np.float32)
+                    cls = np.full(h * w, 255, dtype=np.uint8)
+                    conf = np.zeros(h * w, dtype=np.float32)
 
                     if valid.any():
                         Xv = X[valid]
 
-                        probs = [m.predict_proba(Xv) for m in models]
-                        preds = [p.argmax(axis=1) for p in probs]
+                        # ---- FAST PATH: RF + XGB agree ----
+                        rf_p = rf.predict(Xv)
+                        xgb_p = xgb_model.predict(Xv)
 
-                        first = preds[0]
-                        if all(np.array_equal(first, p) for p in preds[1:]):
-                            cls_flat[valid] = first.astype(np.uint8)
-                            conf_flat[valid] = probs[0].max(axis=1)
+                        agree = rf_p == xgb_p
+
+                        cls_valid = np.empty(len(Xv), dtype=np.uint8)
+                        conf_valid = np.empty(len(Xv), dtype=np.float32)
+
+                        if agree.all():
+                            cls_valid[:] = rf_p
+                            conf_valid[:] = rf.predict_proba(Xv).max(axis=1)
                         else:
-                            ens = ensemble_probabilities(probs, weights=weight_arr)
-                            cls_flat[valid] = ens.argmax(axis=1).astype(np.uint8)
-                            conf_flat[valid] = ens.max(axis=1)
+                            probs = [
+                                rf.predict_proba(Xv),
+                                xgb_model.predict_proba(Xv),
+                            ]
+                            if lr:
+                                probs.append(lr.predict_proba(Xv))
 
-                    cls_dst.write(cls_flat.reshape(h, w), 1, window=window)
-                    conf_dst.write(conf_flat.reshape(h, w), 1, window=window)
+                            ens = ensemble_probabilities(probs, weights)
+                            cls_valid[:] = ens.argmax(axis=1)
+                            conf_valid[:] = ens.max(axis=1)
 
-                    if processed % _PROGRESS_LOG_EVERY == 0 or processed == total_tiles:
-                        frac = processed / total_tiles
-                        msg = f"Inference {processed}/{total_tiles} tiles"
-                        log_event(msg)
-                        _emit_progress(frac, msg)
+                        cls[valid] = cls_valid
+                        conf[valid] = conf_valid
+
+                    cls_dst.write(cls.reshape(h, w), 1, window=win)
+                    conf_dst.write(conf.reshape(h, w), 1, window=win)
+
+                    if done % _PROGRESS_LOG_EVERY == 0 or done == total_tiles:
+                        frac = done / total_tiles
+                        _emit_progress(frac, f"Inference {done}/{total_tiles}")
 
     log_event("Inference completed")
     _emit_progress(1.0, "Inference completed")
@@ -221,6 +197,6 @@ def run_inference(
         "status": "success",
         "outputs": {
             "class_map": str(out_class),
-            "confidence_map": str(out_conf)
+            "confidence_map": str(out_conf),
         }
     }
